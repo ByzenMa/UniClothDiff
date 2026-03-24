@@ -91,6 +91,15 @@ def main():
     config = OmegaConf.create(args_dict)
     config = OmegaConf.merge(config, exp_cfg)
     config.dataset_cfg.data_dir = args.data_dir 
+
+    if (
+        config.mesh_template_mode == "without_template"
+        and config.model_cfg.type == "Transformer3Dv2Model"
+    ):
+        config.model_cfg.type = "Transformer3Dv2NoTemplateModel"
+        if "template_mesh_path" in config.model_cfg:
+            del config.model_cfg["template_mesh_path"]
+
     # Handle the repository creation
     experiment_dir = os.path.join("experiments", f"{config.exp_name}")
     acc_logging_dir = os.path.join(experiment_dir, config.logging_dir)
@@ -275,6 +284,7 @@ def main():
     logger.info("  Trainable model prarameter = %s", format_numel_str(model_numel_trainable),)
     logger.info(f"  Do classifier free guidance = {config.do_classifier_free_guidance}")
     logger.info(f"  Training objective = {config.training_objective}")
+    logger.info(f"  Mesh template mode = {config.mesh_template_mode}")
     
     global_step = 0
     first_epoch = 0

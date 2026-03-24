@@ -265,6 +265,13 @@ def parse_args():
         choices=["diffusion", "transformer_mse"],
         help="Training objective. Use 'diffusion' for DDM and 'transformer_mse' for the Transformer baseline.",
     )
+    parser.add_argument(
+        "--mesh_template_mode",
+        type=str,
+        default="with_template",
+        choices=["with_template", "without_template"],
+        help="Choose original template-mesh model or isolated no-template model.",
+    )
     args = parser.parse_args()
     
     if args.resume_from_checkpoint == "None":

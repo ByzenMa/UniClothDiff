@@ -1,4 +1,5 @@
 training_objective: "diffusion"
+mesh_template_mode: "with_template"
 
 model_cfg:
   type: "TransformerStateEstV3Model"
