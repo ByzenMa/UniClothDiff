@@ -258,6 +258,13 @@ def parse_args():
         default=True,
         action="store_true"
     )
+    parser.add_argument(
+        "--training_objective",
+        type=str,
+        default="diffusion",
+        choices=["diffusion", "transformer_mse"],
+        help="Training objective. Use 'diffusion' for DDM and 'transformer_mse' for the Transformer baseline.",
+    )
     args = parser.parse_args()
     
     if args.resume_from_checkpoint == "None":
