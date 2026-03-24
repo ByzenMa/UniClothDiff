@@ -69,6 +69,18 @@ python scripts/train.py \
   --resume_from_checkpoint="latest" \
   --pretrained_model_name_or_path="None" \
   --config="configs/train_dynamics.yaml" \
+  --training_objective="diffusion" \
+  --mesh_template_mode="with_template" \
+```
+
+To run the **Transformer baseline** used in the paper ablations (same architecture, trained directly with MSE and without diffusion noise training), switch:
+```bash
+--training_objective="transformer_mse"
+```
+
+To run the **no-template** dynamics model (isolated from the original template-mesh branch), switch:
+```bash
+--mesh_template_mode="without_template"
 ```
 
 ## Citation
