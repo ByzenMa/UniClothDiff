@@ -69,6 +69,12 @@ python scripts/train.py \
   --resume_from_checkpoint="latest" \
   --pretrained_model_name_or_path="None" \
   --config="configs/train_dynamics.yaml" \
+  --training_objective="diffusion" \
+```
+
+To run the **Transformer baseline** used in the paper ablations (same architecture, trained directly with MSE and without diffusion noise training), switch:
+```bash
+--training_objective="transformer_mse"
 ```
 
 ## Citation

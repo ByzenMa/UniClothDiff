@@ -1,3 +1,5 @@
+training_objective: "diffusion"
+
 model_cfg:
   type: "TransformerStateEstV3Model"
   num_groups: 256

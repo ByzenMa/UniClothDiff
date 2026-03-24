@@ -39,6 +39,27 @@ from omegaconf import OmegaConf
 
 logger = get_logger(__name__, log_level="INFO")
 
+
+def build_transformer_input_and_target(batch):
+    q_prev = batch["q_prev"]
+    q_delta = batch["q_delta"]
+    q_mask = batch["mask"]
+    action = batch["action"]
+
+    sample_input = torch.cat([q_prev, q_delta], dim=1)
+    if sample_input.ndim == 5:
+        _, num_frames, _, _, _ = sample_input.shape
+        q_mask = q_mask.repeat(1, num_frames, 1, 1, 1)
+        sample_input = torch.cat([sample_input, q_mask], dim=2)
+        sample_input = sample_input.permute(0, 2, 1, 3, 4)
+    elif sample_input.ndim == 4:
+        _, num_frames, _, _ = sample_input.shape
+        q_mask = q_mask.repeat(1, num_frames, 1, 1)
+        sample_input = torch.cat([sample_input, q_mask], dim=-1)
+
+    target = q_delta
+    return sample_input, action, target
+
 def setup_accelerator(project_dir: str, 
                       logging_dir: str, 
                       gradient_accumulation_steps: int,
@@ -115,7 +136,11 @@ def main():
     
     set_seed(config.seed)
     
-    diffusion_scheduler = build_scheduler(OmegaConf.to_container(config.diffusion_cfg))
+    use_diffusion_objective = config.training_objective == "diffusion"
+    if use_diffusion_objective:
+        diffusion_scheduler = build_scheduler(OmegaConf.to_container(config.diffusion_cfg))
+    else:
+        diffusion_scheduler = None
     
     if config.pretrained_model_name_or_path:
         model_cls = getattr(importlib.import_module("uniclothdiff.models"), config.model_cfg.type)
@@ -249,6 +274,7 @@ def main():
     logger.info("  Total model prarameter = %s", format_numel_str(model_numel),)
     logger.info("  Trainable model prarameter = %s", format_numel_str(model_numel_trainable),)
     logger.info(f"  Do classifier free guidance = {config.do_classifier_free_guidance}")
+    logger.info(f"  Training objective = {config.training_objective}")
     
     global_step = 0
     first_epoch = 0
@@ -307,21 +333,31 @@ def main():
 
             with accelerator.accumulate(model):
                 input = batch.pop('q_delta')        # this is for training dynamics
-                if not config.do_classifier_free_guidance:
+                if use_diffusion_objective and (not config.do_classifier_free_guidance):
                     loss = diffusion_scheduler.training_losses(
-                        model=model, 
+                        model=model,
                         input=input,
                         model_kwargs=batch,
                         weight_dtype=weight_dtype
                     )
-                else:
+                elif use_diffusion_objective:
                     loss = diffusion_scheduler.training_losses_with_cfg(
-                        model=model, 
+                        model=model,
                         input=input,
                         model_kwargs=batch,
                         weight_dtype=weight_dtype,
                         generator=generator
                     )
+                else:
+                    batch["q_delta"] = input
+                    model_input, action, target = build_transformer_input_and_target(batch)
+                    timestep = torch.zeros((model_input.shape[0],), device=model_input.device, dtype=torch.long)
+                    pred = model(
+                        hidden_states=model_input,
+                        timestep=timestep,
+                        encoder_hidden_states=action,
+                    ).sample
+                    loss = torch.mean(((pred - target) ** 2).reshape(pred.shape[0], -1), dim=1).mean()
 
                 avg_loss = accelerator.gather(loss.repeat(config.per_gpu_batch_size)).mean()
                 train_loss += avg_loss.item() / config.gradient_accumulation_steps
@@ -382,12 +418,14 @@ def main():
                     (global_step % config.sampling_steps == 0 or \
                      global_step == 1):
                     logger.info("***** Running sampling *****")
-                    pipeline = ClothDynamicsPipeline(
-                        model=accelerator.unwrap_model(model),
-                        scheduler=accelerator.unwrap_model(diffusion_scheduler)
-                    )
-                    pipeline = pipeline.to(accelerator.device)
-                    pipeline.set_progress_bar_config(disable=True)
+                    pipeline = None
+                    if use_diffusion_objective:
+                        pipeline = ClothDynamicsPipeline(
+                            model=accelerator.unwrap_model(model),
+                            scheduler=accelerator.unwrap_model(diffusion_scheduler)
+                        )
+                        pipeline = pipeline.to(accelerator.device)
+                        pipeline.set_progress_bar_config(disable=True)
 
                     with torch.autocast(
                         str(accelerator.device).replace(":0", ""), 
@@ -401,12 +439,36 @@ def main():
                             q_prev = batch['q_prev'].to("cuda")
                             action = batch['action'].to("cuda")
                             q_mask = batch['mask'].to("cuda")
-                            pred = pipeline(
-                                q_prev=q_prev,
-                                q_mask=q_mask,
-                                action=action,
-                                do_classifier_free_guidance=config.do_classifier_free_guidance
-                            )[0]
+                            if use_diffusion_objective:
+                                pred = pipeline(
+                                    q_prev=q_prev,
+                                    q_mask=q_mask,
+                                    action=action,
+                                    do_classifier_free_guidance=config.do_classifier_free_guidance
+                                )[0]
+                            else:
+                                model_input = torch.cat([q_prev, batch["q_delta"].to("cuda")], dim=1)
+                                num_frames = model_input.shape[1]
+                                if model_input.ndim == 5:
+                                    q_mask_model = q_mask.repeat(1, num_frames, 1, 1, 1)
+                                    model_input = torch.cat([model_input, q_mask_model], dim=2)
+                                    model_input = model_input.permute(0, 2, 1, 3, 4)
+                                else:
+                                    q_mask_model = q_mask.repeat(1, num_frames, 1, 1)
+                                    model_input = torch.cat([model_input, q_mask_model], dim=-1)
+
+                                timestep = torch.zeros((q_prev.shape[0],), device=q_prev.device, dtype=torch.long)
+                                pred_delta = accelerator.unwrap_model(model)(
+                                    hidden_states=model_input,
+                                    timestep=timestep,
+                                    encoder_hidden_states=action,
+                                ).sample
+                                if q_prev.ndim == 4:
+                                    q_init = q_prev[:, -1:, :, :]
+                                else:
+                                    q_init = q_prev[:, -1:, :, :, :]
+                                q_cumsum = torch.cumsum(torch.cat([q_init, pred_delta], dim=1), dim=1)
+                                pred = q_cumsum[:, 1:, ...].detach().cpu().numpy()
                             batch_size = q_prev.shape[0]
                             if q_prev.ndim == 5:
                                 q_prev = q_prev.reshape(batch_size, q_prev.shape[1], 3, -1).permute(0, 1, 3, 2).cpu().numpy()
@@ -421,7 +483,8 @@ def main():
                     sample_valid_loss /= num_sample_batches
                     accelerator.print(f"Validation Loss (sampling): {sample_valid_loss}")
                     accelerator.log({"sampled_valid_loss": sample_valid_loss}, step=global_step)
-                    del pipeline
+                    if pipeline is not None:
+                        del pipeline
                     torch.cuda.empty_cache()
                         
     accelerator.wait_for_everyone()
