@@ -39,6 +39,12 @@ from omegaconf import OmegaConf
 
 logger = get_logger(__name__, log_level="INFO")
 
+def read_q_bounds_txt(bounds_path):
+    bounds = np.loadtxt(bounds_path, dtype=np.float32)
+    if bounds.shape != (2, 3):
+        raise ValueError(f"Invalid q bounds format in {bounds_path}, expected shape (2, 3), got {bounds.shape}")
+    return bounds[0].tolist(), bounds[1].tolist()
+
 
 def build_transformer_input_and_target(batch):
     q_prev = batch["q_prev"]
@@ -229,6 +235,19 @@ def main():
     train_dataset_cfg["mode"] = "train"
     valid_dataset_cfg = OmegaConf.to_container(config.dataset_cfg)
     valid_dataset_cfg["mode"] = "valid"
+
+    bounds_file = train_dataset_cfg.get("bounds_file", "q_bounds.txt")
+    bounds_path = os.path.join(config.dataset_cfg.data_dir, bounds_file)
+    if os.path.exists(bounds_path):
+        min_q, max_q = read_q_bounds_txt(bounds_path)
+        train_dataset_cfg["min_q"] = min_q
+        train_dataset_cfg["max_q"] = max_q
+        valid_dataset_cfg["min_q"] = min_q
+        valid_dataset_cfg["max_q"] = max_q
+        logger.info(f"Loaded q bounds from {bounds_path}. min_q={min_q}, max_q={max_q}")
+    else:
+        logger.warning(f"q bounds file not found at {bounds_path}; using dataset config defaults for min_q/max_q.")
+
     train_dataset = build_dataset(train_dataset_cfg)
     valid_dataset = build_dataset(valid_dataset_cfg)
     
