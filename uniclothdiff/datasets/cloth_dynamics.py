@@ -10,14 +10,36 @@ import h5py
 from uniclothdiff.utils import calibur
 from uniclothdiff.registry import DATASETS
 
+
+def read_q_bounds(bounds_path):
+    with open(bounds_path, 'r') as f:
+        lines = [line.strip() for line in f if line.strip()]
+
+    # new format:
+    # min_q x y z
+    # max_q x y z
+    # max_delta_q v
+    if lines[0].startswith("min_q"):
+        min_q = np.array([float(v) for v in lines[0].split()[1:4]], dtype=np.float32)
+        max_q = np.array([float(v) for v in lines[1].split()[1:4]], dtype=np.float32)
+        max_delta_q = float(lines[2].split()[1]) if len(lines) > 2 else None
+        return min_q, max_q, max_delta_q
+
+    # backward compatibility: 2x3 numeric matrix.
+    bounds = np.loadtxt(bounds_path, dtype=np.float32)
+    if bounds.shape != (2, 3):
+        raise ValueError(f"Invalid bounds shape: {bounds.shape}, expected (2, 3)")
+    return bounds[0], bounds[1], None
+
+
 @DATASETS.register_module()
 class ClothDynamicsDataset(Dataset):
 
     def __init__(
         self, 
         data_dir: str, 
-        min_q=[-1.0, -1.0, -1.0],
-        max_q=[ 1.0,  1.0,  1.0],
+        min_q=None,
+        max_q=None,
         max_delta_q=0.05,
         mode='train',
         num_prev_frames=3,
@@ -26,12 +48,15 @@ class ClothDynamicsDataset(Dataset):
         max_delta_action=0.02,
         num_patches=100,
         patch_size=25,
-        view_matrix=None
+        view_matrix=None,
+        bounds_file='q_bounds.txt',
     ):
 
         self.data_dir = data_dir
-        self.data_files = sorted(os.listdir(self.data_dir))
-        self.max_delta_q = max_delta_q
+        self.data_files = sorted([
+            file_name for file_name in os.listdir(self.data_dir)
+            if file_name.endswith('.hdf5') or file_name.endswith('.h5')
+        ])
         self.num_prev_frames = num_prev_frames
         self.num_next_frames = num_next_frames
         self.max_delta_action = max_delta_action
@@ -48,8 +73,18 @@ class ClothDynamicsDataset(Dataset):
         
         self.num_samples = len(self.data_files)
         
+        if min_q is None or max_q is None:
+            bounds_path = os.path.join(self.data_dir, bounds_file)
+            if os.path.exists(bounds_path):
+                min_q, max_q, file_max_delta_q = read_q_bounds(bounds_path)
+                if file_max_delta_q is not None:
+                    max_delta_q = file_max_delta_q
+            else:
+                min_q = [-1.0, -1.0, -1.0]
+                max_q = [1.0, 1.0, 1.0]
         self.min_q = torch.tensor(np.array(min_q), dtype=torch.float32)
         self.max_q = torch.tensor(np.array(max_q), dtype=torch.float32)
+        self.max_delta_q = max_delta_q
 
         self.view_matrix_ros = view_matrix if view_matrix is not None else torch.eye(4)
         self.view_matrix_gl = calibur.convert_pose(self.view_matrix_ros, calibur.CC.ROS, calibur.CC.OpenGL)
@@ -89,7 +124,7 @@ class ClothDynamicsDataset(Dataset):
         
         norm_delta_action = 2.0 * (action - min_delta_action) / (max_delta_action - min_delta_action) - 1.0
         return norm_delta_action
-    
+
     def vertices_to_2d(self, q, resolution):
         width, height = resolution
         seq_len = q.shape[0]
