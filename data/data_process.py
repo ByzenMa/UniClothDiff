@@ -8,6 +8,54 @@ import open3d as o3d
 import numpy as np
 
 
+def compute_normalization_stats(q_prev, q_next, action, mode='zscore', eps=1e-6):
+    """
+    Compute normalization parameters from the current training sample window.
+    Args:
+        q_prev: [T_prev, N_obj, 3]
+        q_next: [T_next, N_obj, 3]
+        action: [T_next, 21, 3]
+        mode: normalization mode, one of {'none', 'zscore', 'minmax'}
+    Returns:
+        stats dict with offset/scale ready for broadcasting.
+    """
+    if mode == 'none':
+        return {
+            'offset': np.zeros((1, 1, 1, 3), dtype=np.float32),
+            'scale': np.ones((1, 1, 1, 3), dtype=np.float32),
+            'mode': mode
+        }
+
+    # Use all positions in the current window to reduce distribution shift.
+    all_pos = np.concatenate([
+        q_prev.reshape(-1, 3),
+        q_next.reshape(-1, 3),
+        action.reshape(-1, 3)
+    ], axis=0).astype(np.float32)
+
+    if mode == 'zscore':
+        offset = np.mean(all_pos, axis=0, keepdims=True)  # [1, 3]
+        scale = np.std(all_pos, axis=0, keepdims=True)    # [1, 3]
+        scale = np.maximum(scale, eps)
+    elif mode == 'minmax':
+        pos_min = np.min(all_pos, axis=0, keepdims=True)
+        pos_max = np.max(all_pos, axis=0, keepdims=True)
+        offset = pos_min
+        scale = np.maximum(pos_max - pos_min, eps)
+    else:
+        raise ValueError(f"Unsupported normalize_mode: {mode}")
+
+    return {
+        'offset': offset.reshape(1, 1, 1, 3),
+        'scale': scale.reshape(1, 1, 1, 3),
+        'mode': mode
+    }
+
+
+def apply_normalization(x, stats):
+    return (x - stats['offset']) / stats['scale']
+
+
 def ply_to_obj_open3d(ply_filepath, obj_filepath):
     # Read the mesh from the PLY file
     # Open3D automatically detects the file type from the extension
@@ -177,6 +225,10 @@ if __name__ == '__main__':
     parser.add_argument('--select_points', type=bool, required=False, default=True)
     parser.add_argument('--select_num', type=int, required=False, default=10)
     parser.add_argument('--obj', type=list, default=['liquid_soap'])
+    parser.add_argument('--normalize_mode', type=str, required=False, default='zscore',
+                        choices=['none', 'zscore', 'minmax'])
+    parser.add_argument('--unit_scale', type=float, required=False, default=1000.0,
+                        help='Scale factor to convert position unit, e.g. 1000 for mm->m.')
     args = parser.parse_args()
 
     # get subinfos
@@ -229,15 +281,33 @@ if __name__ == '__main__':
             q_prev = np.array(q_prev)
             q_next = np.array(q_next)
             action = np.array(action)
+
+            # 1) convert from millimeter-space to meter-space by default
+            q_prev = q_prev / args.unit_scale
+            q_next = q_next / args.unit_scale
+            action = action / args.unit_scale
+
+            # 2) normalize trajectory and action for stable training
+            norm_stats = compute_normalization_stats(
+                q_prev, q_next, action, mode=args.normalize_mode
+            )
+            q_prev = apply_normalization(q_prev[:, None, :, :], norm_stats)[:, 0, :, :]
+            q_next = apply_normalization(q_next[:, None, :, :], norm_stats)[:, 0, :, :]
+            action = apply_normalization(action[:, None, :, :], norm_stats)[:, 0, :, :]
+
             h5_name = "{}_{}_{}_{}".format(sample['subject'], sample['action_name'], sample['seq_idx'], idx)
             h5_file_path = os.path.join(output_path, "{}.hdf5".format(h5_name))
             with h5py.File(h5_file_path, 'w') as f:
                 f.create_dataset('q_prev', data=q_prev)
                 f.create_dataset('q_next', data=q_next)
                 f.create_dataset('action', data=action)
+                # Save sample-wise normalization params for inverse-transform.
+                f.create_dataset('norm_offset', data=norm_stats['offset'][0, 0, 0])
+                f.create_dataset('norm_scale', data=norm_stats['scale'][0, 0, 0])
+                f.attrs['normalize_mode'] = norm_stats['mode']
+                f.attrs['unit_scale'] = args.unit_scale
 
         print("create data from sample {} done".format(sample))
-
 
 
 
