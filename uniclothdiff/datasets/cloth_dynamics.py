@@ -10,14 +10,22 @@ import h5py
 from uniclothdiff.utils import calibur
 from uniclothdiff.registry import DATASETS
 
+
+def read_q_bounds(bounds_path):
+    bounds = np.loadtxt(bounds_path, dtype=np.float32)
+    if bounds.shape != (2, 3):
+        raise ValueError(f"Invalid bounds shape: {bounds.shape}, expected (2, 3)")
+    return bounds[0], bounds[1]
+
+
 @DATASETS.register_module()
 class ClothDynamicsDataset(Dataset):
 
     def __init__(
         self, 
         data_dir: str, 
-        min_q=[-1.0, -1.0, -1.0],
-        max_q=[ 1.0,  1.0,  1.0],
+        min_q=None,
+        max_q=None,
         max_delta_q=0.05,
         mode='train',
         num_prev_frames=3,
@@ -26,11 +34,15 @@ class ClothDynamicsDataset(Dataset):
         max_delta_action=0.02,
         num_patches=100,
         patch_size=25,
-        view_matrix=None
+        view_matrix=None,
+        bounds_file='q_bounds.txt',
     ):
 
         self.data_dir = data_dir
-        self.data_files = sorted(os.listdir(self.data_dir))
+        self.data_files = sorted([
+            file_name for file_name in os.listdir(self.data_dir)
+            if file_name.endswith('.hdf5') or file_name.endswith('.h5')
+        ])
         self.max_delta_q = max_delta_q
         self.num_prev_frames = num_prev_frames
         self.num_next_frames = num_next_frames
@@ -48,6 +60,13 @@ class ClothDynamicsDataset(Dataset):
         
         self.num_samples = len(self.data_files)
         
+        if min_q is None or max_q is None:
+            bounds_path = os.path.join(self.data_dir, bounds_file)
+            if os.path.exists(bounds_path):
+                min_q, max_q = read_q_bounds(bounds_path)
+            else:
+                min_q = [-1.0, -1.0, -1.0]
+                max_q = [1.0, 1.0, 1.0]
         self.min_q = torch.tensor(np.array(min_q), dtype=torch.float32)
         self.max_q = torch.tensor(np.array(max_q), dtype=torch.float32)
 
@@ -89,7 +108,7 @@ class ClothDynamicsDataset(Dataset):
         
         norm_delta_action = 2.0 * (action - min_delta_action) / (max_delta_action - min_delta_action) - 1.0
         return norm_delta_action
-    
+
     def vertices_to_2d(self, q, resolution):
         width, height = resolution
         seq_len = q.shape[0]

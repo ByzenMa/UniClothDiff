@@ -216,6 +216,11 @@ def get_data_info_list(sample):
     return data_dict
 
 
+def normalize_with_bounds(x, min_q, max_q, eps=1e-8):
+    scale = np.maximum(max_q - min_q, eps)
+    return 2.0 * (x - min_q) / scale - 1.0
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--root', type=str, required=False, default='F-PHAB/')
@@ -255,59 +260,73 @@ if __name__ == '__main__':
                         }
                         data_samples.append(sample)
 
-    # get all frame info from one video
+    # Cache frame data and collect global bounds per object.
+    object_samples = {}
+    object_bounds = {}
     for sample in data_samples:
-
         sub_dir = sample['object']
-        # make output directory
+        data_info_list = get_data_info_list(sample)
+        frame_num = sample['frame_num']
+        if frame_num != len(data_info_list):
+            continue
+
+        object_samples.setdefault(sub_dir, []).append((sample, data_info_list))
+
+        for _, (verts, actions) in data_info_list.items():
+            frame_min = np.minimum(np.min(verts, axis=0), np.min(actions, axis=0))
+            frame_max = np.maximum(np.max(verts, axis=0), np.max(actions, axis=0))
+            if sub_dir not in object_bounds:
+                object_bounds[sub_dir] = {
+                    'min_q': frame_min.astype(np.float32),
+                    'max_q': frame_max.astype(np.float32),
+                }
+            else:
+                object_bounds[sub_dir]['min_q'] = np.minimum(
+                    object_bounds[sub_dir]['min_q'], frame_min
+                )
+                object_bounds[sub_dir]['max_q'] = np.maximum(
+                    object_bounds[sub_dir]['max_q'], frame_max
+                )
+
+    # Save normalized windows and per-object bounds.
+    for sub_dir, sample_infos in object_samples.items():
         output_path = os.path.join(args.output, sub_dir)
         os.makedirs(output_path, exist_ok=True)
 
-        data_info_list = get_data_info_list(sample)
-        frame_num = sample['frame_num']
-        num_prev_frames = args.num_prev_frames
-        num_next_frames = args.num_next_frames
-        if frame_num != len(data_info_list):
-            continue
-        for idx in range(num_prev_frames, frame_num-num_next_frames+1):
-            q_prev, q_next, action = [], [], []
-            for i in range(num_prev_frames):
-                v, a = data_info_list[idx-num_prev_frames+i]
-                q_prev.append(v)
-            for i in range(num_next_frames):
-                v, a = data_info_list[idx+i]
-                q_next.append(v)
-                action.append(a)
-            q_prev = np.array(q_prev)
-            q_next = np.array(q_next)
-            action = np.array(action)
+        min_q = object_bounds[sub_dir]['min_q']
+        max_q = object_bounds[sub_dir]['max_q']
+        bounds_txt = os.path.join(output_path, 'q_bounds.txt')
+        np.savetxt(bounds_txt, np.stack([min_q, max_q], axis=0), fmt='%.8f')
+        print("saved bounds to {} min_q={} max_q={}".format(bounds_txt, min_q, max_q))
 
-            # 1) convert from millimeter-space to meter-space by default
-            q_prev = q_prev / args.unit_scale
-            q_next = q_next / args.unit_scale
-            action = action / args.unit_scale
+        for sample, data_info_list in sample_infos:
+            frame_num = sample['frame_num']
+            num_prev_frames = args.num_prev_frames
+            num_next_frames = args.num_next_frames
+            for idx in range(num_prev_frames, frame_num-num_next_frames+1):
+                q_prev, q_next, action = [], [], []
+                for i in range(num_prev_frames):
+                    v, a = data_info_list[idx-num_prev_frames+i]
+                    q_prev.append(v)
+                for i in range(num_next_frames):
+                    v, a = data_info_list[idx+i]
+                    q_next.append(v)
+                    action.append(a)
+                q_prev = np.array(q_prev, dtype=np.float32)
+                q_next = np.array(q_next, dtype=np.float32)
+                action = np.array(action, dtype=np.float32)
 
-            # 2) normalize trajectory and action for stable training
-            norm_stats = compute_normalization_stats(
-                q_prev, q_next, action, mode=args.normalize_mode
-            )
-            q_prev = apply_normalization(q_prev[:, None, :, :], norm_stats)[:, 0, :, :]
-            q_next = apply_normalization(q_next[:, None, :, :], norm_stats)[:, 0, :, :]
-            action = apply_normalization(action[:, None, :, :], norm_stats)[:, 0, :, :]
+                q_prev = normalize_with_bounds(q_prev, min_q, max_q)
+                q_next = normalize_with_bounds(q_next, min_q, max_q)
+                action = normalize_with_bounds(action, min_q, max_q)
 
-            h5_name = "{}_{}_{}_{}".format(sample['subject'], sample['action_name'], sample['seq_idx'], idx)
-            h5_file_path = os.path.join(output_path, "{}.hdf5".format(h5_name))
-            with h5py.File(h5_file_path, 'w') as f:
-                f.create_dataset('q_prev', data=q_prev)
-                f.create_dataset('q_next', data=q_next)
-                f.create_dataset('action', data=action)
-                # Save sample-wise normalization params for inverse-transform.
-                f.create_dataset('norm_offset', data=norm_stats['offset'][0, 0, 0])
-                f.create_dataset('norm_scale', data=norm_stats['scale'][0, 0, 0])
-                f.attrs['normalize_mode'] = norm_stats['mode']
-                f.attrs['unit_scale'] = args.unit_scale
+                h5_name = "{}_{}_{}_{}".format(sample['subject'], sample['action_name'], sample['seq_idx'], idx)
+                h5_file_path = os.path.join(output_path, "{}.hdf5".format(h5_name))
+                with h5py.File(h5_file_path, 'w') as f:
+                    f.create_dataset('q_prev', data=q_prev)
+                    f.create_dataset('q_next', data=q_next)
+                    f.create_dataset('action', data=action)
 
-        print("create data from sample {} done".format(sample))
-
+            print("create data from sample {} done".format(sample))
 
 
