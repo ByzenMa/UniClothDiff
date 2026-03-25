@@ -297,7 +297,8 @@ if __name__ == '__main__':
 
     # Save normalized windows and per-object bounds/statistics.
     for sub_dir, sample_infos in object_samples.items():
-        output_path = os.path.join(args.output, sub_dir)
+        output_dir_name = "{}_{}_{}".format(sub_dir, args.num_prev_frames, args.select_num)
+        output_path = os.path.join(args.output, output_dir_name)
         os.makedirs(output_path, exist_ok=True)
 
         min_q = object_bounds[sub_dir]['min_q']
@@ -350,5 +351,4 @@ if __name__ == '__main__':
                 bounds_txt, min_q, max_q, object_max_delta_q
             )
         )
-
 
