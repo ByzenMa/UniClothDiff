@@ -168,6 +168,18 @@ def get_data_info_list(sample):
     return data_dict
 
 
+def normalize_with_bounds(x, min_q, max_q, eps=1e-8):
+    scale = np.maximum(max_q - min_q, eps)
+    return 2.0 * (x - min_q) / scale - 1.0
+
+
+def save_object_stats(stats_path, min_q, max_q, max_delta_q):
+    with open(stats_path, 'w') as f:
+        f.write("min_q {:.8f} {:.8f} {:.8f}\n".format(min_q[0], min_q[1], min_q[2]))
+        f.write("max_q {:.8f} {:.8f} {:.8f}\n".format(max_q[0], max_q[1], max_q[2]))
+        f.write("max_delta_q {:.8f}\n".format(float(max_delta_q)))
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--root', type=str, required=False, default='F-PHAB/')
@@ -176,7 +188,7 @@ if __name__ == '__main__':
     parser.add_argument('--num_next_frames', type=int, required=False, default=1)
     parser.add_argument('--select_points', type=bool, required=False, default=True)
     parser.add_argument('--select_num', type=int, required=False, default=10)
-    parser.add_argument('--obj', type=list, default=['liquid_soap'])
+    parser.add_argument('--obj', type=str, nargs='+', default=['liquid_soap'])
     args = parser.parse_args()
 
     # get subinfos
@@ -203,41 +215,87 @@ if __name__ == '__main__':
                         }
                         data_samples.append(sample)
 
-    # get all frame info from one video
+    # Cache frame data and collect global bounds per object.
+    object_samples = {}
+    object_bounds = {}
     for sample in data_samples:
-
         sub_dir = sample['object']
-        # make output directory
-        output_path = os.path.join(args.output, sub_dir)
-        os.makedirs(output_path, exist_ok=True)
-
         data_info_list = get_data_info_list(sample)
         frame_num = sample['frame_num']
-        num_prev_frames = args.num_prev_frames
-        num_next_frames = args.num_next_frames
         if frame_num != len(data_info_list):
             continue
-        for idx in range(num_prev_frames, frame_num-num_next_frames+1):
-            q_prev, q_next, action = [], [], []
-            for i in range(num_prev_frames):
-                v, a = data_info_list[idx-num_prev_frames+i]
-                q_prev.append(v)
-            for i in range(num_next_frames):
-                v, a = data_info_list[idx+i]
-                q_next.append(v)
-                action.append(a)
-            q_prev = np.array(q_prev)
-            q_next = np.array(q_next)
-            action = np.array(action)
-            h5_name = "{}_{}_{}_{}".format(sample['subject'], sample['action_name'], sample['seq_idx'], idx)
-            h5_file_path = os.path.join(output_path, "{}.hdf5".format(h5_name))
-            with h5py.File(h5_file_path, 'w') as f:
-                f.create_dataset('q_prev', data=q_prev)
-                f.create_dataset('q_next', data=q_next)
-                f.create_dataset('action', data=action)
 
-        print("create data from sample {} done".format(sample))
+        object_samples.setdefault(sub_dir, []).append((sample, data_info_list))
 
+        for _, (verts, actions) in data_info_list.items():
+            frame_min = np.minimum(np.min(verts, axis=0), np.min(actions, axis=0))
+            frame_max = np.maximum(np.max(verts, axis=0), np.max(actions, axis=0))
+            if sub_dir not in object_bounds:
+                object_bounds[sub_dir] = {
+                    'min_q': frame_min.astype(np.float32),
+                    'max_q': frame_max.astype(np.float32),
+                }
+            else:
+                object_bounds[sub_dir]['min_q'] = np.minimum(
+                    object_bounds[sub_dir]['min_q'], frame_min
+                )
+                object_bounds[sub_dir]['max_q'] = np.maximum(
+                    object_bounds[sub_dir]['max_q'], frame_max
+                )
 
+    # Save normalized windows and per-object bounds/statistics.
+    for sub_dir, sample_infos in object_samples.items():
+        output_dir_name = "{}_{}_{}".format(sub_dir, args.num_prev_frames, args.select_num)
+        output_path = os.path.join(args.output, output_dir_name)
+        os.makedirs(output_path, exist_ok=True)
 
+        min_q = object_bounds[sub_dir]['min_q']
+        max_q = object_bounds[sub_dir]['max_q']
+        object_max_delta_q = 0.0
 
+        for sample, data_info_list in sample_infos:
+            frame_num = sample['frame_num']
+            num_prev_frames = args.num_prev_frames
+            num_next_frames = args.num_next_frames
+            for idx in range(num_prev_frames, frame_num-num_next_frames+1):
+                q_prev, q_next, action = [], [], []
+                for i in range(num_prev_frames):
+                    v, a = data_info_list[idx-num_prev_frames+i]
+                    q_prev.append(v)
+                for i in range(num_next_frames):
+                    v, a = data_info_list[idx+i]
+                    q_next.append(v)
+                    action.append(a)
+                q_prev = np.array(q_prev, dtype=np.float32)
+                q_next = np.array(q_next, dtype=np.float32)
+                action = np.array(action, dtype=np.float32)
+
+                q_prev = normalize_with_bounds(q_prev, min_q, max_q)
+                q_next = normalize_with_bounds(q_next, min_q, max_q)
+                action = normalize_with_bounds(action, min_q, max_q)
+
+                # Track max delta q on normalized trajectory.
+                num_next_frame = q_next.shape[0]
+                if num_next_frame == 1:
+                    q_delta = q_next - q_prev[-1:]
+                else:
+                    prev_frames = np.concatenate([q_prev[-1:], q_next[:-1]], axis=0)
+                    q_delta = q_next - prev_frames
+                object_max_delta_q = max(object_max_delta_q, float(np.max(np.abs(q_delta))))
+
+                h5_name = "{}_{}_{}_{}".format(sample['subject'], sample['action_name'], sample['seq_idx'], idx)
+                h5_file_path = os.path.join(output_path, "{}.hdf5".format(h5_name))
+                with h5py.File(h5_file_path, 'w') as f:
+                    f.create_dataset('q_prev', data=q_prev)
+                    f.create_dataset('q_next', data=q_next)
+                    f.create_dataset('action', data=action)
+
+            print("create data from sample {} done".format(sample))
+
+        bounds_txt = os.path.join(output_path, 'q_bounds.txt')
+        save_object_stats(bounds_txt, min_q, max_q, object_max_delta_q)
+        print(
+            "saved stats to {} min_q={} max_q={} max_delta_q={}".format(
+                bounds_txt, min_q, max_q, object_max_delta_q
+            )
+        )
