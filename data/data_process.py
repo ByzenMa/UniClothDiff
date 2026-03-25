@@ -236,11 +236,7 @@ if __name__ == '__main__':
     parser.add_argument('--num_next_frames', type=int, required=False, default=1)
     parser.add_argument('--select_points', type=bool, required=False, default=True)
     parser.add_argument('--select_num', type=int, required=False, default=10)
-    parser.add_argument('--obj', type=list, default=['liquid_soap'])
-    parser.add_argument('--normalize_mode', type=str, required=False, default='zscore',
-                        choices=['none', 'zscore', 'minmax'])
-    parser.add_argument('--unit_scale', type=float, required=False, default=1000.0,
-                        help='Scale factor to convert position unit, e.g. 1000 for mm->m.')
+    parser.add_argument('--obj', type=str, nargs='+', default=['liquid_soap'])
     args = parser.parse_args()
 
     # get subinfos
@@ -351,4 +347,3 @@ if __name__ == '__main__':
                 bounds_txt, min_q, max_q, object_max_delta_q
             )
         )
-
