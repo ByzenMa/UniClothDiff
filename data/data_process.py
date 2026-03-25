@@ -221,6 +221,13 @@ def normalize_with_bounds(x, min_q, max_q, eps=1e-8):
     return 2.0 * (x - min_q) / scale - 1.0
 
 
+def save_object_stats(stats_path, min_q, max_q, max_delta_q):
+    with open(stats_path, 'w') as f:
+        f.write("min_q {:.8f} {:.8f} {:.8f}\n".format(min_q[0], min_q[1], min_q[2]))
+        f.write("max_q {:.8f} {:.8f} {:.8f}\n".format(max_q[0], max_q[1], max_q[2]))
+        f.write("max_delta_q {:.8f}\n".format(float(max_delta_q)))
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--root', type=str, required=False, default='F-PHAB/')
@@ -288,16 +295,14 @@ if __name__ == '__main__':
                     object_bounds[sub_dir]['max_q'], frame_max
                 )
 
-    # Save normalized windows and per-object bounds.
+    # Save normalized windows and per-object bounds/statistics.
     for sub_dir, sample_infos in object_samples.items():
         output_path = os.path.join(args.output, sub_dir)
         os.makedirs(output_path, exist_ok=True)
 
         min_q = object_bounds[sub_dir]['min_q']
         max_q = object_bounds[sub_dir]['max_q']
-        bounds_txt = os.path.join(output_path, 'q_bounds.txt')
-        np.savetxt(bounds_txt, np.stack([min_q, max_q], axis=0), fmt='%.8f')
-        print("saved bounds to {} min_q={} max_q={}".format(bounds_txt, min_q, max_q))
+        object_max_delta_q = 0.0
 
         for sample, data_info_list in sample_infos:
             frame_num = sample['frame_num']
@@ -320,6 +325,15 @@ if __name__ == '__main__':
                 q_next = normalize_with_bounds(q_next, min_q, max_q)
                 action = normalize_with_bounds(action, min_q, max_q)
 
+                # Track max delta q on normalized trajectory.
+                num_next_frame = q_next.shape[0]
+                if num_next_frame == 1:
+                    q_delta = q_next - q_prev[-1:]
+                else:
+                    prev_frames = np.concatenate([q_prev[-1:], q_next[:-1]], axis=0)
+                    q_delta = q_next - prev_frames
+                object_max_delta_q = max(object_max_delta_q, float(np.max(np.abs(q_delta))))
+
                 h5_name = "{}_{}_{}_{}".format(sample['subject'], sample['action_name'], sample['seq_idx'], idx)
                 h5_file_path = os.path.join(output_path, "{}.hdf5".format(h5_name))
                 with h5py.File(h5_file_path, 'w') as f:
@@ -328,5 +342,13 @@ if __name__ == '__main__':
                     f.create_dataset('action', data=action)
 
             print("create data from sample {} done".format(sample))
+
+        bounds_txt = os.path.join(output_path, 'q_bounds.txt')
+        save_object_stats(bounds_txt, min_q, max_q, object_max_delta_q)
+        print(
+            "saved stats to {} min_q={} max_q={} max_delta_q={}".format(
+                bounds_txt, min_q, max_q, object_max_delta_q
+            )
+        )
 
 
