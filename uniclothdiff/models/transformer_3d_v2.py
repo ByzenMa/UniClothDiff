@@ -328,12 +328,14 @@ class Transformer3Dv2Model(ModelMixin, ConfigMixin):
         hidden_states, input_hidden_states = self.pos_embed(hidden_states)  # already add positional embeddings
         num_patches = hidden_states.shape[1]
         
-        # Prepare action embeddings for spatial block
-        # batch_size num_tokens hidden_size -> (batch_size * num_frame) num_tokens hidden_size
-        encoder_hidden_states = self.action_embedding(encoder_hidden_states)  # batch_size, num_action, 1024
-        encoder_hidden_states_spatial = encoder_hidden_states.repeat_interleave(num_frame, dim=0).view(
-            -1, encoder_hidden_states.shape[-2], encoder_hidden_states.shape[-1]
-        )
+        # Prepare action embeddings for spatial block.
+        # If encoder_hidden_states is None, spatial blocks fall back to self-attention only.
+        encoder_hidden_states_spatial = None
+        if encoder_hidden_states is not None:
+            encoder_hidden_states = self.action_embedding(encoder_hidden_states)  # batch_size, num_action, 1024
+            encoder_hidden_states_spatial = encoder_hidden_states.repeat_interleave(num_frame, dim=0).view(
+                -1, encoder_hidden_states.shape[-2], encoder_hidden_states.shape[-1]
+            )
 
         # for inference only
         if len(timestep.shape) < 1:

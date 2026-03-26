@@ -162,6 +162,7 @@ def main():
     set_seed(config.seed)
     
     use_diffusion_objective = config.training_objective == "diffusion"
+    use_action = config.get("use_action", True)
     if use_diffusion_objective:
         diffusion_scheduler = build_scheduler(OmegaConf.to_container(config.diffusion_cfg))
     else:
@@ -317,6 +318,7 @@ def main():
     logger.info(f"  Do classifier free guidance = {config.do_classifier_free_guidance}")
     logger.info(f"  Training objective = {config.training_objective}")
     logger.info(f"  Mesh template mode = {config.mesh_template_mode}")
+    logger.info(f"  Use action condition = {use_action}")
     
     global_step = 0
     first_epoch = 0
@@ -376,6 +378,8 @@ def main():
             with accelerator.accumulate(model):
                 input = batch.pop('q_delta')        # this is for training dynamics
                 if use_diffusion_objective and (not config.do_classifier_free_guidance):
+                    if not use_action:
+                        batch["action"] = None
                     loss = diffusion_scheduler.training_losses(
                         model=model,
                         input=input,
@@ -383,6 +387,8 @@ def main():
                         weight_dtype=weight_dtype
                     )
                 elif use_diffusion_objective:
+                    if not use_action:
+                        batch["action"] = None
                     loss = diffusion_scheduler.training_losses_with_cfg(
                         model=model,
                         input=input,
@@ -393,6 +399,8 @@ def main():
                 else:
                     batch["q_delta"] = input
                     model_input, action, target = build_transformer_input_and_target(batch)
+                    if not use_action:
+                        action = None
                     timestep = torch.zeros((model_input.shape[0],), device=model_input.device, dtype=torch.long)
                     pred = model(
                         hidden_states=model_input,
@@ -480,12 +488,13 @@ def main():
                                 break
                             q_prev = batch['q_prev'].to("cuda")
                             action = batch['action'].to("cuda")
+                            model_action = action if use_action else None
                             q_mask = batch['mask'].to("cuda")
                             if use_diffusion_objective:
                                 pred = pipeline(
                                     q_prev=q_prev,
                                     q_mask=q_mask,
-                                    action=action,
+                                    action=model_action,
                                     do_classifier_free_guidance=config.do_classifier_free_guidance
                                 )[0]
                             else:
@@ -503,7 +512,7 @@ def main():
                                 pred_delta = accelerator.unwrap_model(model)(
                                     hidden_states=model_input,
                                     timestep=timestep,
-                                    encoder_hidden_states=action,
+                                    encoder_hidden_states=model_action,
                                 ).sample
                                 if q_prev.ndim == 4:
                                     q_init = q_prev[:, -1:, :, :]
