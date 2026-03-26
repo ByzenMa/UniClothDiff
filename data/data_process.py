@@ -227,6 +227,9 @@ def save_object_stats(stats_path, min_q, max_q, max_delta_q):
         f.write("max_q {:.8f} {:.8f} {:.8f}\n".format(max_q[0], max_q[1], max_q[2]))
         f.write("max_delta_q {:.8f}\n".format(float(max_delta_q)))
 
+def get_action_type(action_name):
+    return action_name.split('_')[0]
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -237,6 +240,7 @@ if __name__ == '__main__':
     parser.add_argument('--select_points', type=bool, required=False, default=True)
     parser.add_argument('--select_num', type=int, required=False, default=10)
     parser.add_argument('--obj', type=str, nargs='+', default=['liquid_soap'])
+    parser.add_argument('--action', type=str, nargs='+', default=None)
     args = parser.parse_args()
 
     # get subinfos
@@ -251,10 +255,14 @@ if __name__ == '__main__':
                 for kw in args.obj:
                     if kw in line:
                         dir_name, part_id, _, frames_num = line.strip('\n').split(' ')
+                        action_type = get_action_type(dir_name)
+                        if args.action is not None and action_type not in args.action:
+                            continue
                         sample = {
                             'root': args.root,
                             'subject': sub_name,
                             'action_name': dir_name,
+                            'action_type': action_type,
                             'seq_idx': part_id,
                             'object': kw,
                             'frame_num': int(frames_num),
@@ -267,7 +275,7 @@ if __name__ == '__main__':
     object_samples = {}
     object_bounds = {}
     for sample in data_samples:
-        sub_dir = sample['object']
+        sub_dir = (sample['object'], sample['action_type'])
         data_info_list = get_data_info_list(sample)
         frame_num = sample['frame_num']
         if frame_num != len(data_info_list):
@@ -293,7 +301,10 @@ if __name__ == '__main__':
 
     # Save normalized windows and per-object bounds/statistics.
     for sub_dir, sample_infos in object_samples.items():
-        output_dir_name = "{}_{}_{}".format(sub_dir, args.num_prev_frames, args.select_num)
+        object_name, action_name = sub_dir
+        output_dir_name = "{}_{}_{}_{}".format(
+            object_name, action_name, args.num_prev_frames, args.select_num
+        )
         output_path = os.path.join(args.output, output_dir_name)
         os.makedirs(output_path, exist_ok=True)
 
