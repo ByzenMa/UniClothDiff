@@ -277,7 +277,11 @@ if __name__ == '__main__':
     object_samples = {}
     object_bounds = {}
     for sample in data_samples:
+<<<<<<< codex/modify-transformer_3d_v2.py-to-handle-encoder_hidden_states-7esavz
         sub_dir = (sample['object'], sample['action_type']) if split_by_action else sample['object']
+=======
+        sub_dir = (sample['object'], sample['action_type'])
+>>>>>>> main
         data_info_list = get_data_info_list(sample)
         frame_num = sample['frame_num']
         if frame_num != len(data_info_list):
@@ -303,6 +307,7 @@ if __name__ == '__main__':
 
     # Save normalized windows and per-group bounds/statistics.
     for sub_dir, sample_infos in object_samples.items():
+<<<<<<< codex/modify-transformer_3d_v2.py-to-handle-encoder_hidden_states-7esavz
         if split_by_action:
             object_name, action_name = sub_dir
             output_dir_name = "{}_{}_{}_{}".format(
@@ -310,6 +315,12 @@ if __name__ == '__main__':
             )
         else:
             output_dir_name = "{}_{}_{}".format(sub_dir, args.num_prev_frames, args.select_num)
+=======
+        object_name, action_name = sub_dir
+        output_dir_name = "{}_{}_{}_{}".format(
+            object_name, action_name, args.num_prev_frames, args.select_num
+        )
+>>>>>>> main
         output_path = os.path.join(args.output, output_dir_name)
         os.makedirs(output_path, exist_ok=True)
 

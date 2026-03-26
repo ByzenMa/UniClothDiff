@@ -10,7 +10,11 @@ def main():
     parser.add_argument('--output', type=str, default='HandPose/')
     parser.add_argument('--num_prev_frames', type=int, default=3)
     parser.add_argument('--num_next_frames', type=int, default=1)
+<<<<<<< codex/modify-transformer_3d_v2.py-to-handle-encoder_hidden_states-7esavz
     parser.add_argument('--actions', type=str, nargs='+', default=None)
+=======
+    parser.add_argument('--actions', type=str, nargs='+', default=['pour', 'open'])
+>>>>>>> main
     args = parser.parse_args()
 
     objects = ['liquid_soap', 'juice', 'milk', 'salt']
@@ -19,7 +23,11 @@ def main():
     script_path = os.path.join(os.path.dirname(__file__), 'data_process.py')
     os.makedirs(args.output, exist_ok=True)
 
+<<<<<<< codex/modify-transformer_3d_v2.py-to-handle-encoder_hidden_states-7esavz
     if args.actions is None:
+=======
+    for action in args.actions:
+>>>>>>> main
         for obj in objects:
             for select_num in select_nums:
                 cmd = [
@@ -30,6 +38,7 @@ def main():
                     '--num_next_frames', str(args.num_next_frames),
                     '--select_num', str(select_num),
                     '--obj', obj,
+<<<<<<< codex/modify-transformer_3d_v2.py-to-handle-encoder_hidden_states-7esavz
                 ]
                 print("Running:", " ".join(cmd))
                 subprocess.run(cmd, check=True)
@@ -49,6 +58,12 @@ def main():
                     ]
                     print("Running:", " ".join(cmd))
                     subprocess.run(cmd, check=True)
+=======
+                    '--action', action,
+                ]
+                print("Running:", " ".join(cmd))
+                subprocess.run(cmd, check=True)
+>>>>>>> main
 
 
 if __name__ == '__main__':
