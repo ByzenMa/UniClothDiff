@@ -1,6 +1,7 @@
 
 training_objective: "diffusion"
 mesh_template_mode: "with_template"
+use_action: true
 
 model_cfg:
   type: "Transformer3Dv2Model"
