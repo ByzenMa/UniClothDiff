@@ -328,14 +328,19 @@ class Transformer3Dv2Model(ModelMixin, ConfigMixin):
         hidden_states, input_hidden_states = self.pos_embed(hidden_states)  # already add positional embeddings
         num_patches = hidden_states.shape[1]
         
-        # Prepare action embeddings for spatial block.
-        # If encoder_hidden_states is None, spatial blocks fall back to self-attention only.
-        encoder_hidden_states_spatial = None
-        if encoder_hidden_states is not None:
-            encoder_hidden_states = self.action_embedding(encoder_hidden_states)  # batch_size, num_action, 1024
-            encoder_hidden_states_spatial = encoder_hidden_states.repeat_interleave(num_frame, dim=0).view(
-                -1, encoder_hidden_states.shape[-2], encoder_hidden_states.shape[-1]
+        # Prepare action embeddings for spatial cross-attention.
+        # BasicTransformerBlock here is initialized with cross_attention_dim=action_embed_dim.
+        # So when encoder_hidden_states is None, we generate a single zero-action token
+        # to keep key/value projection dimensions valid.
+        if encoder_hidden_states is None:
+            encoder_hidden_states = torch.zeros(
+                (batch_size, 1, 3), device=hidden_states.device, dtype=hidden_states.dtype
             )
+
+        encoder_hidden_states = self.action_embedding(encoder_hidden_states)  # batch_size, num_action, 1024
+        encoder_hidden_states_spatial = encoder_hidden_states.repeat_interleave(num_frame, dim=0).view(
+            -1, encoder_hidden_states.shape[-2], encoder_hidden_states.shape[-1]
+        )
 
         # for inference only
         if len(timestep.shape) < 1:
