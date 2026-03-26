@@ -118,7 +118,7 @@ class ClothDynamicsPipeline(DiffusionPipeline):
         self,
         q_prev: torch.FloatTensor,
         q_mask: torch.Tensor,
-        action: torch.FloatTensor,
+        action: Optional[torch.FloatTensor],
     ):
         num_input_frames = q_prev.shape[1]
         q_mask = q_mask.repeat(1, num_input_frames, 1, 1)
@@ -136,7 +136,7 @@ class ClothDynamicsPipeline(DiffusionPipeline):
         self,
         q_prev: torch.FloatTensor,
         q_mask: torch.Tensor,
-        action: torch.FloatTensor,
+        action: Optional[torch.FloatTensor],
         num_inference_steps: int = 1000,
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
         latents: Optional[torch.FloatTensor] = None,
@@ -148,17 +148,18 @@ class ClothDynamicsPipeline(DiffusionPipeline):
         eta: float = 0.0,
     ):
         batch_size = q_prev.shape[0]
+        num_pred_frames = self.model.config.num_out_frames if action is None else action.shape[1]
         
         device = self._execution_device
         
         self.scheduler.set_timesteps(num_inference_steps, device=device)
         timesteps = self.scheduler.timesteps
-        num_frames = q_prev.shape[1] + action.shape[1]
+        num_frames = q_prev.shape[1] + num_pred_frames
         
         if q_prev.ndim == 5:
             batch_size, _, channels, _, _ = q_prev.shape
             x_0 = randn_tensor(
-                    shape=(batch_size, action.shape[1], channels, *q_prev.shape[-2:]), 
+                    shape=(batch_size, num_pred_frames, channels, *q_prev.shape[-2:]), 
                     generator=generator, 
                     device=device, 
                     dtype=q_prev.dtype
@@ -167,7 +168,7 @@ class ClothDynamicsPipeline(DiffusionPipeline):
         elif q_prev.ndim == 4:
             batch_size, _, _, channels = q_prev.shape
             x_0 = randn_tensor(
-                    shape=(batch_size, action.shape[1], *q_prev.shape[-2:]),
+                    shape=(batch_size, num_pred_frames, *q_prev.shape[-2:]),
                     generator=generator,
                     device=device,
                     dtype=q_prev.dtype
@@ -180,6 +181,8 @@ class ClothDynamicsPipeline(DiffusionPipeline):
         self._num_timesteps = len(timesteps)
         
         if do_classifier_free_guidance:
+            if action is None:
+                raise ValueError("Classifier-free guidance requires action conditioning, but got action=None.")
             null_action = torch.zeros_like(action)
             action_cfg = torch.cat([action, null_action], dim=0)
             self._guidance_scale = guidance_scale
@@ -244,7 +247,7 @@ class ClothDynamicsPipeline(DiffusionPipeline):
 
         x = self.denormalize_delta_q(x)
         
-        if action.shape[1] == 1:
+        if num_pred_frames == 1:
             q_next = q_prev[:, -1:, ...] + x
         else:
             if q_prev.ndim == 4:
@@ -260,7 +263,7 @@ class ClothDynamicsPipeline(DiffusionPipeline):
         
         if q_next.ndim == 5:
             x = q_next.permute(0, 1, 3, 4, 2)
-            x = x.reshape(batch_size, action.shape[1], -1, 3)
+            x = x.reshape(batch_size, num_pred_frames, -1, 3)
         elif q_next.ndim == 4:
             x = q_next
             
@@ -274,4 +277,3 @@ class ClothDynamicsPipeline(DiffusionPipeline):
             frames=final_result,
             result_tensor=x
         )
-
